@@ -1,0 +1,17 @@
+List of expected outputs (right) from the provided inputs (left).
+When testing, remember to provide only a single word per line for every input word.
+
+Input: a boy eats
+Output: food
+
+Input: a girl eats
+Output: food
+
+Input: a bird drinks
+Output: water
+
+Input: a fish needs
+Output: water
+
+Input: a boy needs
+Output: food
