@@ -259,39 +259,38 @@ main:
 # (in)     a0: filename address (char*)
 # (in/out) a1: destination buffer
 # (in)     a2: maximum number of bytes to read
-read_file:
-    addi sp, sp, -16                               # allocate stack space for ra, s0, s1, and s2
-    sw ra, 0(sp)                                   # save the return address
-    sw s0, 4(sp)                                   # save s0 because this function uses it
-    sw s1, 8(sp)                                   # save s1 because this function uses it
-    sw s2, 12(sp)                                  # save s2 because this function uses it
+read_file:                                          # label for read file
+    addi sp, sp, -12                               # allocate stack space for s0, s1, and s2
+    sw s0, 0(sp)                                   # save s0 because this function uses it
+    sw s1, 4(sp)                                   # save s1 because this function uses it
+    sw s2, 8(sp)                                  # save s2 because this function uses it
+
     mv s0, a1                                      # s0 = destination buffer address
     mv s1, a2                                      # s1 = maximum number of bytes to read
+
     li a1, 0                                       # a1 = flags, where 0 means read-only mode
     li a7, CONST_SYSCALL_OPEN                      # a7 = open syscall number
     ecall                                          # open the file whose name is in a0
+
     mv s2, a0                                      # s2 = file descriptor returned by open
     mv a0, s2                                      # a0 = file descriptor for read
+
     mv a1, s0                                      # a1 = destination buffer for read
     mv a2, s1                                      # a2 = maximum number of bytes for read
     li a7, CONST_SYSCALL_READ                      # a7 = read syscall number
     ecall                                          # read the file into the destination buffer
-    blt a0, zero, read_file_close                  # if read failed, skip null termination safely
-    blt a0, s1, read_file_add_zero                 # if bytes_read < max_bytes, add a null terminator
-    j read_file_close                              # otherwise skip null termination to avoid overflow
-read_file_add_zero:
-    add t0, s0, a0                                 # t0 = address just after the bytes read
-    sb zero, 0(t0)                                 # write a null terminator after the file contents
-read_file_close:
+
+    j read_file_close
+read_file_close:                                    # label for read file close
     mv a0, s2                                      # a0 = file descriptor for close
     li a7, CONST_SYSCALL_CLOSE                     # a7 = close syscall number
     ecall                                          # close the file
-    lw ra, 0(sp)                                   # restore the return address
-    lw s0, 4(sp)                                   # restore s0
-    lw s1, 8(sp)                                   # restore s1
-    lw s2, 12(sp)                                  # restore s2
-    addi sp, sp, 16                                # free stack space
-    ret                                            # return to the caller
+    
+    lw s0, 0(sp)                                   # restore s0
+    lw s1, 4(sp)                                   # restore s1
+    lw s2, 8(sp)                                  # restore s2
+    addi sp, sp, 12                                # free stack space
+    jr ra                                            # return to the caller
 
 # Assumes the matrix is stored in the buffer as space-separated integers.
 # Assumes columns are separated by 1 space (' '), and rows by 1 newline ('\n').
@@ -300,215 +299,176 @@ read_file_close:
 # (out)    a1: number of rows in the matrix (int)
 # (in)     a1: address of the buffer containing the matrix data (char*)
 parse_matrix_buffer:
+    # 1. Copy arguments to work registers
     mv t0, a0                                      # t0 = current output position in the integer matrix
     mv t1, a1                                      # t1 = current input position in the text buffer
+    
+    # 2. Initialize state variables
     li t2, 0                                       # t2 = number of parsed rows
     li t3, 0                                       # t3 = current integer value being parsed
-    li t4, 1                                       # t4 = current sign, initially positive
-    li t5, 0                                       # t5 = in-number flag, initially false
+    li t4, 0                                       # t4 = current sign flag (0 = positive, 1 = negative)
+    li t5, 0                                       # t5 = in-number flag (0 = false, 1 = true)
+    
+    # 3. Load defined global constants ONLY ONCE outside the loop
+    li a2, CONST_CHAR_HYPHEN                       # a2 = ASCII code for '-'
+    li a3, CONST_CHAR_SPACE                        # a3 = ASCII code for space
+    li a4, CONST_CHAR_NEWLINE                      # a4 = ASCII code for newline
+    li a5, 10                                      # a5 = decimal base 10
+
 parse_matrix_loop:
     lb t6, 0(t1)                                   # t6 = current character from the text buffer
-    beqz t6, parse_matrix_end                      # if current character is EOF/null, finish parsing
-    li a4, CONST_CHAR_HYPHEN                       # a4 = ASCII code for '-'
-    beq t6, a4, parse_matrix_minus                 # if current character is '-', parse a negative sign
-    li a4, CONST_CHAR_SPACE                        # a4 = ASCII code for space
-    beq t6, a4, parse_matrix_separator             # if current character is space, finish current number
-    li a4, CONST_CHAR_TAB                          # a4 = ASCII code for tab
-    beq t6, a4, parse_matrix_separator             # if current character is tab, finish current number
-    li a4, CONST_CHAR_CR                           # a4 = ASCII code for carriage return ('\r')
-    beq t6, a4, parse_matrix_separator             # if current character is CR, finish current number
-    li a4, CONST_CHAR_NEWLINE                      # a4 = ASCII code for newline
-    beq t6, a4, parse_matrix_newline               # if current character is newline, finish current row
-    addi a4, t6, -48                               # a4 = numeric value of the digit character
-    li a5, 10                                      # a5 = decimal base 10
-    mul t3, t3, a5                                 # current value = current value * 10
-    add t3, t3, a4                                 # current value = current value + digit
-    li t5, 1                                       # mark that we are currently parsing a number
-    addi t1, t1, 1                                 # move to the next character
-    j parse_matrix_loop                            # continue parsing
-parse_matrix_minus:
-    li t4, -1                                      # set sign to negative
-    li t5, 1                                       # mark that a number has started
-    addi t1, t1, 1                                 # move to the next character
-    j parse_matrix_loop                            # continue parsing
-parse_matrix_separator:
-    beqz t5, parse_matrix_skip_separator           # if no number is active, skip the separator
-    mul t3, t3, t4                                 # apply the sign to the parsed value
-    sw t3, 0(t0)                                   # store the parsed integer in the output matrix
-    addi t0, t0, 4                                 # move to the next output integer slot
-    li t3, 0                                       # reset the current value
-    li t4, 1                                       # reset the sign to positive
-    li t5, 0                                       # reset the in-number flag
-parse_matrix_skip_separator:
-    addi t1, t1, 1                                 # move past the separator
-    j parse_matrix_loop                            # continue parsing
-parse_matrix_newline:
-    beqz t5, parse_matrix_count_row                # if no number is active, only count the row
-    mul t3, t3, t4                                 # apply the sign to the parsed value
-    sw t3, 0(t0)                                   # store the parsed integer in the output matrix
-    addi t0, t0, 4                                 # move to the next output integer slot
-    li t3, 0                                       # reset the current value
-    li t4, 1                                       # reset the sign to positive
-    li t5, 0                                       # reset the in-number flag
-parse_matrix_count_row:
-    addi t2, t2, 1                                 # count one completed matrix row
-    addi t1, t1, 1                                 # move past the newline character
-    j parse_matrix_loop                            # continue parsing
-parse_matrix_end:
-    beqz t5, parse_matrix_return                   # if no unfinished number exists, return now
-    mul t3, t3, t4                                 # apply the sign to the final parsed value
-    sw t3, 0(t0)                                   # store the final parsed integer
-    addi t2, t2, 1                                 # count the final row without a trailing newline
-parse_matrix_return:
-    mv a1, t2                                      # a1 = number of parsed rows
-    ret                                            # return to the caller
+    beqz t6, parse_matrix_end                      # If character is EOF/null, finish parsing
 
+    beq t6, a2, parse_matrix_minus                 # If character is '-', handle negative sign
+    beq t6, a3, parse_matrix_separator             # If character is space, finish current number
+    beq t6, a4, parse_matrix_newline               # If character is newline, finish current row
+
+    
+    addi t6, t6, -48                               # Convert ASCII to numeric value
+    mul t3, t3, a5                                 # current value = current value * 10
+    add t3, t3, t6                                 # current value = current value + digit
+    li t5, 1                                       # Mark that we are currently parsing a number
+
+parse_matrix_next_char:
+    addi t1, t1, 1                                 # Move to the next character in the buffer
+    j parse_matrix_loop                            # Continue parsing
+
+parse_matrix_minus:
+    li t4, 1                                       # Set negative sign flag to true
+    li t5, 1                                       # Mark that a number has started
+    j parse_matrix_next_char                       # Move to next character
+
+parse_matrix_separator:
+    beqz t5, parse_matrix_next_char                # If no number is active, skip the separator
+    li t6, 0                                       # FLAG: 0 means we came from a space separator
+    j parse_matrix_prepare_store
+
+parse_matrix_newline:
+    beqz t5, parse_matrix_count_row                # If no number is active, just count the row
+    li t6, 1                                       # FLAG: 1 means we came from a newline
+
+parse_matrix_prepare_store:
+    # Apply sign using fast 'neg' instruction
+    beqz t4, parse_matrix_store
+    neg t3, t3                                     # Invert sign if negative flag is active
+
+parse_matrix_store:
+    sw t3, 0(t0)                                   # Store the parsed integer in the output matrix
+    addi t0, t0, 4                                 # Move to the next output integer slot (4 bytes)
+    
+    # Reset number parsing state for the next integer
+    li t3, 0                                       
+    li t4, 0                                       
+    li t5, 0   
+
+    # Check the flag we set in t6 to decide where to go
+    bnez t6, parse_matrix_count_row                # If t6 == 1, it was a newline -> go count the row
+    j parse_matrix_next_char                       # If t6 == 0, it was a space -> just go to next char
+
+parse_matrix_count_row:
+    addi t2, t2, 1                                 # Count one completed matrix row
+    addi t1, t1, 1                                 # Move past the newline character
+    j parse_matrix_loop                            # Continue parsing
+
+parse_matrix_end:
+    mv a1, t2                                      # a1 = total number of parsed rows (output)
+    jr ra                                          # Return to the caller using jr ra
 # Converts the input tokens into their corresponding indices in the vocabulary.
 # (in/out) a0: address of input indices vector to fill (int*)
 # (out)    a1: size of input indices vector (number of tokens in input)
 # (in)     a2: address to input buffer
 # (in)     a3: address to vocabulary buffer
 tokens_to_indices:
-    mv t0, a0                                      # t0 = current output position in the indices vector
-    mv t1, a2                                      # t1 = current input token position
-    mv t2, a3                                      # t2 = base address of the vocabulary buffer
-    li t3, 0                                       # t3 = number of input tokens converted
+    mv t0, a0                  # t0 = current output position in the indices vector
+    mv t1, a2                  # t1 = current input token pointer
+    li t3, 0                   # t3 = number of input tokens converted
+    li t4, 10                  # t4 = '\n' (newline ASCII). The only separator we care about!
 
 tokens_outer_loop:
-    # Skip separators before the next input token.
-tokens_skip_input_separators:
-    lb t4, 0(t1)
-    beqz t4, tokens_done
-    li a0, CONST_CHAR_SPACE
-    beq t4, a0, tokens_skip_one_input_separator
-    li a0, CONST_CHAR_NEWLINE
-    beq t4, a0, tokens_skip_one_input_separator
-    li a0, CONST_CHAR_TAB
-    beq t4, a0, tokens_skip_one_input_separator
-    li a0, CONST_CHAR_CR
-    beq t4, a0, tokens_skip_one_input_separator
-    j tokens_start_vocab_search
-
-tokens_skip_one_input_separator:
-    addi t1, t1, 1
-    j tokens_skip_input_separators
-
+    lb a4, 0(t1)               # Load current character from input
+    beqz a4, tokens_done       # If we reached the end of the input (\0), finish
+    beq a4, t4, tokens_skip_input_separators # Ignore repeating or leading newlines
+    
 tokens_start_vocab_search:
-    mv t5, t2                                      # t5 = current vocabulary token position
-    li t6, 0                                       # t6 = current vocabulary token index
-
+    # Prepare vocabulary search from the beginning for this input word
+    mv t5, a3                  # t5 = current vocabulary token pointer
+    li t6, 0                   # t6 = current vocabulary token index
+    
 tokens_vocab_loop:
-    # Skip separators between vocabulary tokens.
-tokens_skip_vocab_separators:
-    lb t4, 0(t5)
-    beqz t4, tokens_done                           # not expected: input word not found
-    li a0, CONST_CHAR_SPACE
-    beq t4, a0, tokens_skip_one_vocab_separator
-    li a0, CONST_CHAR_NEWLINE
-    beq t4, a0, tokens_skip_one_vocab_separator
-    li a0, CONST_CHAR_TAB
-    beq t4, a0, tokens_skip_one_vocab_separator
-    li a0, CONST_CHAR_CR
-    beq t4, a0, tokens_skip_one_vocab_separator
-    j tokens_begin_compare
-
-tokens_skip_one_vocab_separator:
-    addi t5, t5, 1
-    j tokens_skip_vocab_separators
-
+    lb a5, 0(t5)               # Load current character from vocabulary
+    beqz a5, tokens_ignore_input # Failsafe: end of vocab reached
+    beq a5, t4, tokens_skip_vocab_separators
+    
 tokens_begin_compare:
-    mv a6, t1                                      # a6 = input comparison pointer
-    mv a7, t5                                      # a7 = vocabulary comparison pointer
-
+    # Set up temporary pointers to compare character by character
+    mv a6, t1                  # a6 = input comparison pointer
+    mv a7, t5                  # a7 = vocabulary comparison pointer
+    
 tokens_compare_loop:
-    lb a4, 0(a6)                                   # a4 = current input character
-    lb a5, 0(a7)                                   # a5 = current vocabulary character
-
-    # If the input token ended, the vocabulary token must also end.
+    lb a4, 0(a6)               # Input character
+    lb a5, 0(a7)               # Vocabulary character
+    
+    # Did the input word end? (hit a '\n' or '\0')
+    beq a4, t4, tokens_input_ended
     beqz a4, tokens_input_ended
-    li a0, CONST_CHAR_SPACE
-    beq a4, a0, tokens_input_ended
-    li a0, CONST_CHAR_NEWLINE
-    beq a4, a0, tokens_input_ended
-    li a0, CONST_CHAR_TAB
-    beq a4, a0, tokens_input_ended
-    li a0, CONST_CHAR_CR
-    beq a4, a0, tokens_input_ended
-
-    # If the vocabulary token ended first, the words are different.
-    beqz a5, tokens_not_equal
-    li a0, CONST_CHAR_SPACE
-    beq a5, a0, tokens_not_equal
-    li a0, CONST_CHAR_NEWLINE
-    beq a5, a0, tokens_not_equal
-    li a0, CONST_CHAR_TAB
-    beq a5, a0, tokens_not_equal
-    li a0, CONST_CHAR_CR
-    beq a5, a0, tokens_not_equal
-
-    bne a4, a5, tokens_not_equal                   # different characters => not the same token
+    
+    # Normal letters: if they are different, the words don't match
+    bne a4, a5, tokens_not_equal
+    
+    # Letters match: move to the next character
     addi a6, a6, 1
     addi a7, a7, 1
     j tokens_compare_loop
 
 tokens_input_ended:
-    # Check if vocabulary token also ended.
+    # The input word ended. For a match, the vocabulary word must also end here.
+    beq a5, t4, tokens_equal
     beqz a5, tokens_equal
-    li a0, CONST_CHAR_SPACE
-    beq a5, a0, tokens_equal
-    li a0, CONST_CHAR_NEWLINE
-    beq a5, a0, tokens_equal
-    li a0, CONST_CHAR_TAB
-    beq a5, a0, tokens_equal
-    li a0, CONST_CHAR_CR
-    beq a5, a0, tokens_equal
-    j tokens_not_equal
+    j tokens_not_equal         # Vocab word was longer than the input word
 
 tokens_equal:
-    sw t6, 0(t0)                                   # store the vocabulary index for this input token
-    addi t0, t0, 4
-    addi t3, t3, 1
-
-    # Advance input pointer to the end of the current token; the outer loop skips separators.
-tokens_advance_input:
-    lb a4, 0(t1)
-    beqz a4, tokens_outer_loop
-    li a0, CONST_CHAR_SPACE
-    beq a4, a0, tokens_outer_loop
-    li a0, CONST_CHAR_NEWLINE
-    beq a4, a0, tokens_outer_loop
-    li a0, CONST_CHAR_TAB
-    beq a4, a0, tokens_outer_loop
-    li a0, CONST_CHAR_CR
-    beq a4, a0, tokens_outer_loop
-    addi t1, t1, 1
-    j tokens_advance_input
+    sw t6, 0(t0)               # Store the vocabulary index in the output array
+    addi t0, t0, 4             # Advance the output array pointer (1 int = 4 bytes)
+    addi t3, t3, 1             # Increment the converted tokens counter
+    mv t1, a6                  # Advance the main input pointer to the end of the matched word
+    j tokens_outer_loop
 
 tokens_not_equal:
-    # Move t5 to the end of the current vocabulary token.
-tokens_advance_vocab:
-    lb a4, 0(t5)
-    beqz a4, tokens_done                           # not expected: input word not found
-    li a0, CONST_CHAR_SPACE
-    beq a4, a0, tokens_vocab_next
-    li a0, CONST_CHAR_NEWLINE
-    beq a4, a0, tokens_vocab_next
-    li a0, CONST_CHAR_TAB
-    beq a4, a0, tokens_vocab_next
-    li a0, CONST_CHAR_CR
-    beq a4, a0, tokens_vocab_next
+    # Advance the vocabulary pointer (t5) until we find the next '\n'
+    lb a5, 0(t5)
+    beqz a5, tokens_done       # Failsafe: end of vocab buffer
+    beq a5, t4, tokens_vocab_next
     addi t5, t5, 1
-    j tokens_advance_vocab
-
+    j tokens_not_equal
+    
 tokens_vocab_next:
-    addi t5, t5, 1                                 # move past the separator
-    addi t6, t6, 1                                 # next vocabulary index
+    addi t5, t5, 1             # Skip the '\n' separator
+    addi t6, t6, 1             # Increment the vocabulary index counter
     j tokens_vocab_loop
 
-tokens_done:
-    mv a1, t3                                      # a1 = number of converted input tokens
-    ret                                            # return to the caller
+tokens_skip_input_separators:
+    addi t1, t1, 1             # Consume the extra '\n' from the input
+    j tokens_outer_loop
+    
+tokens_skip_vocab_separators:
+    addi t5, t5, 1             # Consume the extra '\n' from the vocabulary
+    j tokens_vocab_loop
 
+tokens_ignore_input:
+    # If the word isn't in the vocabulary (failsafe), skip it and move to the next input word
+    lb a4, 0(t1)
+    beqz a4, tokens_done
+    beq a4, t4, tokens_advance_input_ignored
+    addi t1, t1, 1
+    j tokens_ignore_input
+
+tokens_advance_input_ignored:
+    addi t1, t1, 1
+    j tokens_outer_loop
+
+tokens_done:
+    mv a1, t3                  # Return the total number of converted tokens in a1
+    jr ra
 # (in/out) a0: address of the output matrix to fill (int*)
 # (in)     a1: address of the vocabulary embeddings matrix (int*)
 # (in)     a2: address of the input indices array (int*)
@@ -516,28 +476,31 @@ tokens_done:
 build_input_embeddings_matrix:
     mv t0, a0                                      # t0 = current output position in the input embeddings matrix
     mv t1, a1                                      # t1 = base address of the vocabulary embeddings matrix
-    mv t2, a2                                      # t2 = current position in the input indices array
-    mv t3, a3                                      # t3 = number of input tokens
-    li t4, 0                                       # t4 = current input token counter
+    mv t2, a2                                                                            # t2 = current position in the input indices array
+    li t3, 0                                       # t3 = current input token counter
+
 build_embeddings_token_loop:
-    beq t4, t3, build_embeddings_done              # if all input tokens were copied, finish
-    lw t5, 0(t2)                                   # t5 = vocabulary index of the current input token
-    slli t6, t5, 4                                 # t6 = byte offset of the vocabulary row, because 4 ints * 4 bytes = 16
-    add a4, t1, t6                                 # a4 = address of the selected vocabulary embedding row
+    beq t3, a3, build_embeddings_done              # if all input tokens were copied, finish
+    lw t4, 0(t2)                                   # t5 = vocabulary index of the current input token
+    slli t5, t4, 4                                 # t6 = byte offset of the vocabulary row, because 4 ints * 4 bytes = 16
+    add a4, t1, t5                                 # a4 = address of the selected vocabulary embedding row
     li a5, 0                                       # a5 = current column counter
+    li t6, CONST_DIMENSION                         # a6 = embedding dimension
+
 build_embeddings_col_loop:
-    li a6, CONST_DIMENSION                         # a6 = embedding dimension
-    beq a5, a6, build_embeddings_next_token        # if all columns were copied, move to next token
-    lw a7, 0(a4)                                   # a7 = current embedding value from vocabulary matrix
-    sw a7, 0(t0)                                   # store the embedding value into the input matrix
+    beq a5, t6, build_embeddings_next_token        # if all columns were copied, move to next token
+    lw a6, 0(a4)                                   # a7 = current embedding value from vocabulary matrix
+    sw a6, 0(t0)                                   # store the embedding value into the input matrix
     addi a4, a4, 4                                 # move to the next source integer
     addi t0, t0, 4                                 # move to the next destination integer
     addi a5, a5, 1                                 # increment the column counter
     j build_embeddings_col_loop                    # continue copying the current embedding row
+
 build_embeddings_next_token:
     addi t2, t2, 4                                 # move to the next input index
-    addi t4, t4, 1                                 # increment the input token counter
+    addi t3, t3, 1                                 # increment the input token counter
     j build_embeddings_token_loop                  # process the next input token
+
 build_embeddings_done:
     ret                                            # return to the caller
 
@@ -626,52 +589,72 @@ matrix_done:
 # (in)     a4: #columns of Q and K (int)
 # (in)     a5: target token index for which we want to compute the score (int)
 compute_scores:
-    addi sp, sp, -36                               # allocate stack space for ra and saved registers
-    sw ra, 0(sp)                                   # save the return address
-    sw s0, 4(sp)                                   # save s0
-    sw s1, 8(sp)                                   # save s1
-    sw s2, 12(sp)                                  # save s2
-    sw s3, 16(sp)                                  # save s3
-    sw s4, 20(sp)                                  # save s4
-    sw s5, 24(sp)                                  # save s5
-    sw s6, 28(sp)                                  # save s6
-    sw s7, 32(sp)                                  # save s7
-    mv s0, a0                                      # s0 = scores vector base address
-    mv s1, a1                                      # s1 = Q matrix base address
-    mv s2, a2                                      # s2 = K matrix base address
-    mv s3, a3                                      # s3 = number of rows
-    mv s4, a4                                      # s4 = number of columns
-    mv s5, a5                                      # s5 = target token index
-    mul t0, s5, s4                                 # t0 = target index * number of columns
-    slli t0, t0, 2                                 # t0 = byte offset of Q[target]
-    add s7, s1, t0                                 # s7 = address of Q[target]
-    li s6, 0                                       # s6 = current row index j
+    # 1. Allocate stack space (need to save ra and 7 's' registers)
+    addi sp, sp, -32
+    sw ra, 0(sp)
+    sw s0, 4(sp)
+    sw s1, 8(sp)
+    sw s2, 12(sp)
+    sw s3, 16(sp)
+    sw s4, 20(sp)
+    sw s5, 24(sp)
+    sw s6, 28(sp)
+
+    # 2. Save arguments in preserved registers
+    mv s6, a0                  # s6 = original scores base address (to return at the end)
+    mv s0, a0                  # s0 = moving pointer for the scores vector
+    mv s3, a3                  # s3 = row counter
+    mv s4, a4                  # s4 = number of columns (vector length to pass to dot)
+
+    # 3. Calculate the size of a row in bytes (stride = columns * 4)
+    slli s5, s4, 2             # s5 = bytes to skip to reach the next row
+
+    # 4. Calculate the static address of Q[target]
+    # offset = target_index * stride
+    mul t0, a5, s5
+    add s1, a1, t0             # s1 = address of row Q[target] (remains constant)
+
+    # 5. K pointer starts at the initial base address
+    mv s2, a2                  # s2 = moving pointer for K[j]
+
+    # Failsafe: if the number of rows is 0, exit immediately
+    beqz s3, compute_scores_done
+
 compute_scores_loop:
-    beq s6, s3, compute_scores_done                # if j == number of rows, all scores are computed
-    mul t0, s6, s4                                 # t0 = j * number of columns
-    slli t0, t0, 2                                 # t0 = byte offset of K[j]
-    add t1, s2, t0                                 # t1 = address of K[j]
-    mv a1, s7                                      # a1 = address of Q[target]
-    mv a2, t1                                      # a2 = address of K[j]
-    mv a3, s4                                      # a3 = vector length
-    jal dot                                        # compute dot(Q[target], K[j])
-    slli t0, s6, 2                                 # t0 = byte offset of scores[j]
-    add t1, s0, t0                                 # t1 = address of scores[j]
-    sw a1, 0(t1)                                   # store the dot product result in scores[j]
-    addi s6, s6, 1                                 # j++
-    j compute_scores_loop                          # compute the next score
+    # 6. Prepare arguments for the dot function
+    mv a1, s1                  # arg a1 = address of Q[target]
+    mv a2, s2                  # arg a2 = current address of K[j]
+    mv a3, s4                  # arg a3 = vector length (number of columns)
+
+    jal dot                    # Compute the dot product: score = Q[target] · K[j]
+
+    # 7. The dot function returns the result in a1 (a0 brings the error code, which we ignore)
+    sw a1, 0(s0)               # Store the result at the current address of scores
+
+    # 8. Advance the moving pointers for the next iteration
+    addi s0, s0, 4             # Advance output pointer by 1 position (4 bytes)
+    add s2, s2, s5             # Advance K pointer by 1 full row (stride bytes)
+
+    # 9. Decrement the counter and repeat if it hasn't reached 0
+    addi s3, s3, -1
+    bnez s3, compute_scores_loop
+
 compute_scores_done:
-    lw ra, 0(sp)                                   # restore the return address
-    lw s0, 4(sp)                                   # restore s0
-    lw s1, 8(sp)                                   # restore s1
-    lw s2, 12(sp)                                  # restore s2
-    lw s3, 16(sp)                                  # restore s3
-    lw s4, 20(sp)                                  # restore s4
-    lw s5, 24(sp)                                  # restore s5
-    lw s6, 28(sp)                                  # restore s6
-    lw s7, 32(sp)                                  # restore s7
-    addi sp, sp, 36                                # free stack space
-    ret                                            # return to the caller
+    # 10. Restore a0 with the original in/out address
+    mv a0, s6                  
+
+    # 11. Clean up the stack and restore registers
+    lw ra, 0(sp)
+    lw s0, 4(sp)
+    lw s1, 8(sp)
+    lw s2, 12(sp)
+    lw s3, 16(sp)
+    lw s4, 20(sp)
+    lw s5, 24(sp)
+    lw s6, 28(sp)
+    addi sp, sp, 32
+    
+    jr ra
 
 # (out) a0: address of the selected vector (int*)
 # (in)  a1: address of matrix (int*)
@@ -682,7 +665,7 @@ select_vector_in_matrix:
     mul t0, a4, a3                                 # t0 = target row * number of columns
     slli t0, t0, 2                                 # t0 = byte offset of the selected row
     add a0, a1, t0                                 # a0 = address of the selected row
-    ret                                            # return to the caller
+    jr ra                                            # return to the caller
 
 # (out) a0: index of the predicted token in the vocabulary (int)
 # (in)  a0: address of target vector (int*)
