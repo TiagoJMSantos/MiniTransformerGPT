@@ -40,16 +40,16 @@
 # Data section with static memory reservations.
 # Feel free to add more if needed.
 ###########################################################################
-VOCABULARY_FILENAME:     .string "vocab.txt"
-EMBEDDINGS_FILENAME:     .string "embeddings.txt"
-INPUT_FILENAME:          .string "input.txt"
+VOCABULARY_FILENAME:     .string "/home/martim/ASS_Proj/Projeto-IAC-26/vocab.txt"
+EMBEDDINGS_FILENAME:     .string "/home/martim/ASS_Proj/Projeto-IAC-26/embeddings.txt"
+INPUT_FILENAME:          .string "/home/martim/ASS_Proj/Projeto-IAC-26/input.txt"
 
-W_Q_FILENAME:            .string "W_Q.txt"
-W_K_FILENAME:            .string "W_K.txt"
-W_V_FILENAME:            .string "W_V.txt"
+W_Q_FILENAME:            .string "/home/martim/ASS_Proj/Projeto-IAC-26/W_Q.txt"
+W_K_FILENAME:            .string "/home/martim/ASS_Proj/Projeto-IAC-26/W_K.txt"
+W_V_FILENAME:            .string "/home/martim/ASS_Proj/Projeto-IAC-26/W_V.txt"
 
 VOCAB_BUFFER:            .zero CONST_BUFFER_SIZE                              # Contents of the vocabulary file
-INPUT_BUFFER:            .zero CONST_BUFFER_SIZE                              # Contents of the input file
+INPUT_BUFFER:            .zero CONST_BUFFER_SIZE                              # Contents of the input file 
 MATRIX_BUFFER:           .zero CONST_BUFFER_SIZE                              # Contents of a matrix file (used for W_Q, W_K, W_V, and embeddings)
 
 INPUT_INDICES_VECTOR:    .zero (CONST_MAX_INPUT_TOKENS * 4)                   # Vector of input token indices (#inputs x 4 bytes)
@@ -253,38 +253,37 @@ main:                                               # program entry point
 # (in/out) a1: destination buffer
 # (in)     a2: maximum number of bytes to read
 read_file:                                          # label for read file
-    addi sp, sp, -16                               # allocate stack space for ra, s0, s1, and s2
-    sw ra, 0(sp)                                   # save the return address
-    sw s0, 4(sp)                                   # save s0 because this function uses it
-    sw s1, 8(sp)                                   # save s1 because this function uses it
-    sw s2, 12(sp)                                  # save s2 because this function uses it
+    addi sp, sp, -12                               # allocate stack space for s0, s1, and s2
+    sw s0, 0(sp)                                   # save s0 because this function uses it
+    sw s1, 4(sp)                                   # save s1 because this function uses it
+    sw s2, 8(sp)                                  # save s2 because this function uses it
+
     mv s0, a1                                      # s0 = destination buffer address
     mv s1, a2                                      # s1 = maximum number of bytes to read
+
     li a1, 0                                       # a1 = flags, where 0 means read-only mode
     li a7, CONST_SYSCALL_OPEN                      # a7 = open syscall number
     ecall                                          # open the file whose name is in a0
+
     mv s2, a0                                      # s2 = file descriptor returned by open
     mv a0, s2                                      # a0 = file descriptor for read
+
     mv a1, s0                                      # a1 = destination buffer for read
     mv a2, s1                                      # a2 = maximum number of bytes for read
     li a7, CONST_SYSCALL_READ                      # a7 = read syscall number
     ecall                                          # read the file into the destination buffer
-    blt a0, zero, read_file_close                  # if read failed, skip null termination safely
-    blt a0, s1, read_file_add_zero                 # if bytes_read < max_bytes, add a null terminator
-    j read_file_close                              # otherwise skip null termination to avoid overflow
-read_file_add_zero:                                 # label for read file add zero
-    add t0, s0, a0                                 # t0 = address just after the bytes read
-    sb zero, 0(t0)                                 # write a null terminator after the file contents
+
+    j read_file_close
 read_file_close:                                    # label for read file close
     mv a0, s2                                      # a0 = file descriptor for close
     li a7, CONST_SYSCALL_CLOSE                     # a7 = close syscall number
     ecall                                          # close the file
-    lw ra, 0(sp)                                   # restore the return address
-    lw s0, 4(sp)                                   # restore s0
-    lw s1, 8(sp)                                   # restore s1
-    lw s2, 12(sp)                                  # restore s2
-    addi sp, sp, 16                                # free stack space
-    ret                                            # return to the caller
+    
+    lw s0, 0(sp)                                   # restore s0
+    lw s1, 4(sp)                                   # restore s1
+    lw s2, 8(sp)                                  # restore s2
+    addi sp, sp, 12                                # free stack space
+    jr ra                                            # return to the caller
 
 # Assumes the matrix is stored in the buffer as space-separated integers.
 # Assumes columns are separated by 1 space (' '), and rows by 1 newline ('\n').
@@ -292,70 +291,81 @@ read_file_close:                                    # label for read file close
 # (in/out) a0: address of the matrix to fill (int*)
 # (out)    a1: number of rows in the matrix (int)
 # (in)     a1: address of the buffer containing the matrix data (char*)
-parse_matrix_buffer:                                # label for parse matrix buffer
+parse_matrix_buffer:
+    # 1. Copy arguments to work registers
     mv t0, a0                                      # t0 = current output position in the integer matrix
     mv t1, a1                                      # t1 = current input position in the text buffer
+    
+    # 2. Initialize state variables
     li t2, 0                                       # t2 = number of parsed rows
     li t3, 0                                       # t3 = current integer value being parsed
-    li t4, 1                                       # t4 = current sign, initially positive
-    li t5, 0                                       # t5 = in-number flag, initially false
-parse_matrix_loop:                                  # label for parse matrix loop
-    lb t6, 0(t1)                                   # t6 = current character from the text buffer
-    beqz t6, parse_matrix_end                      # if current character is EOF/null, finish parsing
-    li a4, CONST_CHAR_HYPHEN                       # a4 = ASCII code for '-'
-    beq t6, a4, parse_matrix_minus                 # if current character is '-', parse a negative sign
-    li a4, CONST_CHAR_SPACE                        # a4 = ASCII code for space
-    beq t6, a4, parse_matrix_separator             # if current character is space, finish current number
-    li a4, CONST_CHAR_TAB                          # a4 = ASCII code for tab
-    beq t6, a4, parse_matrix_separator             # if current character is tab, finish current number
-    li a4, CONST_CHAR_CR                           # a4 = ASCII code for carriage return ('\r')
-    beq t6, a4, parse_matrix_separator             # if current character is CR, finish current number
+    li t4, 0                                       # t4 = current sign flag (0 = positive, 1 = negative)
+    li t5, 0                                       # t5 = in-number flag (0 = false, 1 = true)
+    
+    # 3. Load defined global constants ONLY ONCE outside the loop
+    li a2, CONST_CHAR_HYPHEN                       # a2 = ASCII code for '-'
+    li a3, CONST_CHAR_SPACE                        # a3 = ASCII code for space
     li a4, CONST_CHAR_NEWLINE                      # a4 = ASCII code for newline
-    beq t6, a4, parse_matrix_newline               # if current character is newline, finish current row
-    addi a4, t6, -48                               # a4 = numeric value of the digit character
     li a5, 10                                      # a5 = decimal base 10
-    mul t3, t3, a5                                 # current value = current value * 10
-    add t3, t3, a4                                 # current value = current value + digit
-    li t5, 1                                       # mark that we are currently parsing a number
-    addi t1, t1, 1                                 # move to the next character
-    j parse_matrix_loop                            # continue parsing
-parse_matrix_minus:                                 # label for parse matrix minus
-    li t4, -1                                      # set sign to negative
-    li t5, 1                                       # mark that a number has started
-    addi t1, t1, 1                                 # move to the next character
-    j parse_matrix_loop                            # continue parsing
-parse_matrix_separator:                             # label for parse matrix separator
-    beqz t5, parse_matrix_skip_separator           # if no number is active, skip the separator
-    mul t3, t3, t4                                 # apply the sign to the parsed value
-    sw t3, 0(t0)                                   # store the parsed integer in the output matrix
-    addi t0, t0, 4                                 # move to the next output integer slot
-    li t3, 0                                       # reset the current value
-    li t4, 1                                       # reset the sign to positive
-    li t5, 0                                       # reset the in-number flag
-parse_matrix_skip_separator:                        # label for parse matrix skip separator
-    addi t1, t1, 1                                 # move past the separator
-    j parse_matrix_loop                            # continue parsing
-parse_matrix_newline:                               # label for parse matrix newline
-    beqz t5, parse_matrix_count_row                # if no number is active, only count the row
-    mul t3, t3, t4                                 # apply the sign to the parsed value
-    sw t3, 0(t0)                                   # store the parsed integer in the output matrix
-    addi t0, t0, 4                                 # move to the next output integer slot
-    li t3, 0                                       # reset the current value
-    li t4, 1                                       # reset the sign to positive
-    li t5, 0                                       # reset the in-number flag
-parse_matrix_count_row:                             # label for parse matrix count row
-    addi t2, t2, 1                                 # count one completed matrix row
-    addi t1, t1, 1                                 # move past the newline character
-    j parse_matrix_loop                            # continue parsing
-parse_matrix_end:                                   # label for parse matrix end
-    beqz t5, parse_matrix_return                   # if no unfinished number exists, return now
-    mul t3, t3, t4                                 # apply the sign to the final parsed value
-    sw t3, 0(t0)                                   # store the final parsed integer
-    addi t2, t2, 1                                 # count the final row without a trailing newline
-parse_matrix_return:                                # label for parse matrix return
-    mv a1, t2                                      # a1 = number of parsed rows
-    ret                                            # return to the caller
 
+parse_matrix_loop:
+    lb t6, 0(t1)                                   # t6 = current character from the text buffer
+    beqz t6, parse_matrix_end                      # If character is EOF/null, finish parsing
+
+    beq t6, a2, parse_matrix_minus                 # If character is '-', handle negative sign
+    beq t6, a3, parse_matrix_separator             # If character is space, finish current number
+    beq t6, a4, parse_matrix_newline               # If character is newline, finish current row
+
+    
+    addi t6, t6, -48                               # Convert ASCII to numeric value
+    mul t3, t3, a5                                 # current value = current value * 10
+    add t3, t3, t6                                 # current value = current value + digit
+    li t5, 1                                       # Mark that we are currently parsing a number
+
+parse_matrix_next_char:
+    addi t1, t1, 1                                 # Move to the next character in the buffer
+    j parse_matrix_loop                            # Continue parsing
+
+parse_matrix_minus:
+    li t4, 1                                       # Set negative sign flag to true
+    li t5, 1                                       # Mark that a number has started
+    j parse_matrix_next_char                       # Move to next character
+
+parse_matrix_separator:
+    beqz t5, parse_matrix_next_char                # If no number is active, skip the separator
+    li t6, 0                                       # FLAG: 0 means we came from a space separator
+    j parse_matrix_prepare_store
+
+parse_matrix_newline:
+    beqz t5, parse_matrix_count_row                # If no number is active, just count the row
+    li t6, 1                                       # FLAG: 1 means we came from a newline
+
+parse_matrix_prepare_store:
+    # Apply sign using fast 'neg' instruction
+    beqz t4, parse_matrix_store
+    neg t3, t3                                     # Invert sign if negative flag is active
+
+parse_matrix_store:
+    sw t3, 0(t0)                                   # Store the parsed integer in the output matrix
+    addi t0, t0, 4                                 # Move to the next output integer slot (4 bytes)
+    
+    # Reset number parsing state for the next integer
+    li t3, 0                                       
+    li t4, 0                                       
+    li t5, 0   
+
+    # Check the flag we set in t6 to decide where to go
+    bnez t6, parse_matrix_count_row                # If t6 == 1, it was a newline -> go count the row
+    j parse_matrix_next_char                       # If t6 == 0, it was a space -> just go to next char
+
+parse_matrix_count_row:
+    addi t2, t2, 1                                 # Count one completed matrix row
+    addi t1, t1, 1                                 # Move past the newline character
+    j parse_matrix_loop                            # Continue parsing
+
+parse_matrix_end:
+    mv a1, t2                                      # a1 = total number of parsed rows (output)
+    jr ra                                          # Return to the caller using jr ra
 # Converts the input tokens into their corresponding indices in the vocabulary.
 # (in/out) a0: address of input indices vector to fill (int*)
 # (out)    a1: size of input indices vector (number of tokens in input)
